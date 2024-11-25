@@ -9,6 +9,7 @@ v0.4 2024-10-22, Support Chinese and English low voltage alarm; add ESC status m
 v0.5 2024-10-26, Get the telemetry value through appid.
 v0.6 2024-11-03, Voice Report Capacity Percentage.
 v0.7 2024-11-15, Added log file writing function.
+v0.8 2024-11-25, The recorded data is averaged once and then recorded.
 CLI:
 set crsf_telemetry_mode = CUSTOM
 set crsf_telemetry_link_rate = 500
@@ -18,13 +19,13 @@ set crsf_telemetry_sensors = 3,43,4,5,6,60,15,50,52,93,90,27,28,21,0,0,0,0,0,0,0
 
 --Script information
 local NAME                 = "FlyLog"
-local VERSION              = "0.7"
-local DATE                 = "2024-11-15"
+local VERSION              = "0.8"
+local DATE                 = "2024-11-25"
 
 --Variable
---Charge Level, Consumption, Voltage, BEC Voltage, ESC Temp, Current, Headspeed, Throttle %, MCU Temp, ESC1 PWM, Rx RSSI1, Rx RSSI2, Rx Quality
-local crsf_field_table     = { 0x1014, 0x1013, 0x1011, 0x1081, 0x10A0, 0x1012, 0x10C0, 0x1035, 0x10A3, 0x1045, "Rx RSSI1", "Rx RSSI2", "Rx Quality" }
-local data_format_table    = { "%d", "%d", "%.1f", "%.1f", "%d", "%.1f", "%d", "%d", "%d", "%d", "%d", "%d", "%d" }
+--Charge Level, Consumption, Voltage, BEC Voltage, ESC Temp, Current, Headspeed, Throttle %, MCU Temp, ESC1 PWM
+local crsf_field_table     = { 0x1014, 0x1013, 0x1011, 0x1081, 0x10A0, 0x1012, 0x10C0, 0x1035, 0x10A3, 0x1045 }
+local data_format_table    = { "%d", "%d", "%.1f", "%.1f", "%d", "%.1f", "%d", "%d", "%d", "%d" }
 local gov_status_table     = { "OFF", "IDLE", "SPOOLUP", "RECOVERY", "ACTIVE", "THR-OFF", "LOST-HS", "AUTOROT", "BAILOUT" }
 local esc_id_table         = { 0x00, 0xC8, 0x9B, 0x4B, 0xD0, 0xDD, 0xA0, 0xFD, 0x53, 0xA5, 0x73 }
 local esc_signatures_table = { "NONE", "BLHELI32", "HW4", "KON", "OMP", "ZTW", "APD", "PL5", "TRIB", "OPENYGE", "FLYROTOR" }
@@ -38,6 +39,8 @@ local sensor               = nil
 local sensor_value_table   = {}
 local sensor_max_table     = {}
 local sensor_min_table     = {}
+local sensor_buffer_table  = { 0, 0, 0, 0, 0 }
+local sensor_log_pos_table = { 3, 5, 6, 7, 10 } --Voltage, ESC Temp, Current, Headspeed, ESC1 PWM
 local fc_status            = ""
 local gov_status           = ""
 local esc_signatures       = ""
@@ -192,6 +195,7 @@ local function create()
         arm_flag         = false,
         start_timer_flag = false,
         lever_tone_flag  = false,
+        buffer_count     = 0,
     }
     --Create a folder
     if os.mkdir ~= nil and dir_exists("/scripts/widget-flylog/", "logs") == false then
@@ -249,7 +253,7 @@ local function paint(widget)
     --Get window size
     local w, h = lcd.getWindowSize() --X14: w=630 h=258 X20: w=784 h=316
     lcd.color(COLOR_BLACK)
-    lcd.drawFilledRectangle(0, 0, w, h)
+    lcd.drawFilledRectangle(1, 1, w - 2, h - 2)
     --Lcd type
     if w < 630 or h < 258 then
         widget.default_lcd_flag = false
@@ -319,6 +323,10 @@ local function wakeup(widget)
                     sensor_max_table[s] = sensor_value_table[s]
                     sensor_min_table[s] = sensor_value_table[s]
                 end
+                for c = 1, #sensor_buffer_table do
+                    sensor_buffer_table[c] = 0
+                end
+                widget.buffer_count = 0
                 widget.second = 0
                 level_save = 0
                 play_speed = 0
@@ -329,7 +337,7 @@ local function wakeup(widget)
                 file_name = "[F" .. string.format("%02d", widget.flight_number + 1) .. "].csv"
                 f_file_path = widget.date_file_path .. file_name
                 f_file_obj = io.open(f_file_path, "w")
-                --io.write(f_file_obj, "Time,Charge Level,Consumption,Voltage,BEC Voltage,ESC Temp,Current,Headspeed,Throttle,MCU Temp,ESC1 PWM,Rx Quality\n")
+                --Time, Voltage, ESC Temp, Current, Headspeed, ESC1 PWM
                 io.write(f_file_obj, "Time,Voltage,ESC Temp,Current,Headspeed,ESC1 PWM\n")
             end
         else
@@ -350,11 +358,7 @@ local function wakeup(widget)
     end
     --Get sensor
     for index, value in ipairs(crsf_field_table) do
-        if index < 11 then
-            sensor = system.getSource({ category = CATEGORY_TELEMETRY_SENSOR, appId = value })
-        else
-            sensor = system.getSource(value)
-        end
+        sensor = system.getSource({ category = CATEGORY_TELEMETRY_SENSOR, appId = value })
         if sensor ~= nil then
             local data = sensor:value()
             if data ~= nil then
@@ -437,6 +441,11 @@ local function wakeup(widget)
                 widget.lever_tone_flag = true
             end
         end
+        --Buffer data
+        for c = 1, #sensor_buffer_table do
+            sensor_buffer_table[c] = sensor_buffer_table[c] + sensor_value_table[sensor_log_pos_table[c]]
+        end
+        widget.buffer_count = widget.buffer_count + 1
         --os timer
         local ostime = os.time()
         if ostime_save ~= ostime then
@@ -448,26 +457,20 @@ local function wakeup(widget)
             else
                 widget.start_timer_flag = true
             end
-            --Warning logs->Time,Charge Level,Consumption,Voltage,BEC Voltage,ESC Temp,Current,Headspeed,Throttle,MCU Temp,ESC1 PWM,Rx Quality
-            --[[io.write(f_file_obj, tostring(widget.second) .. ',' ..
-                tostring(math.floor(sensor_value_table[1])) .. ',' ..
-                tostring(math.floor(sensor_value_table[2])) .. ',' ..
-                tostring(string.format("%.1f", sensor_value_table[3])) .. ',' ..
-                tostring(string.format("%.1f", sensor_value_table[4])) .. ',' ..
-                tostring(math.floor(sensor_value_table[5])) .. ',' ..
-                tostring(string.format("%.1f", sensor_value_table[6])) .. ',' ..
-                tostring(math.floor(sensor_value_table[7])) .. ',' ..
-                tostring(math.floor(sensor_value_table[8])) .. ',' ..
-                tostring(math.floor(sensor_value_table[9])) .. ',' ..
-                tostring(math.floor(sensor_value_table[10])) .. ',' ..
-                tostring(math.floor(sensor_value_table[13])) .. "\n"
-            )]]
-            io.write(f_file_obj, tostring(widget.second) .. ',' ..               --Time
-                tostring(string.format("%.1f", sensor_value_table[3])) .. ',' .. --Voltage
-                tostring(math.floor(sensor_value_table[5])) .. ',' ..            --ESC Temp
-                tostring(string.format("%.1f", sensor_value_table[6])) .. ',' .. --Current
-                tostring(math.floor(sensor_value_table[7])) .. ',' ..            --Headspeed
-                tostring(math.floor(sensor_value_table[10])) .. "\n"             --ESC1 PWM
+            --Average
+            local lod_data = {}
+            for a = 1, #sensor_buffer_table do
+                lod_data[a] = sensor_buffer_table[a] / widget.buffer_count
+                sensor_buffer_table[a] = 0
+            end
+            widget.buffer_count = 0
+            --Warning logs
+            io.write(f_file_obj, tostring(widget.second) .. ',' .. --Time
+                string.format("%.1f", lod_data[1]) .. ',' ..       --Voltage
+                tostring(math.floor(lod_data[2])) .. ',' ..        --ESC Temp
+                string.format("%.1f", lod_data[3]) .. ',' ..       --Current
+                tostring(math.floor(lod_data[4])) .. ',' ..        --Headspeed
+                tostring(math.floor(lod_data[5])) .. "\n"          --ESC1 PWM
             )
             --Tone
             play_speed = play_speed + 1

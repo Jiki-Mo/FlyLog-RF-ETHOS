@@ -2,13 +2,14 @@
 LogCurve tool for ETHOS X14
 FlyDragon Mo
 Release:
-v0.1 2024-11-15
+v0.1 2024-11-15, First version.
+v0.2 2024-11-25, Added reading prompts.
 ]]
 
 --Script information
 local NAME         = "LogCurve"
-local VERSION      = "0.1"
-local DATE         = "2024-11-15"
+local VERSION      = "0.2"
+local DATE         = "2024-11-25"
 
 local BACK_COLOR   = lcd.RGB(40, 40, 40)
 local SELECT_COLOR = lcd.RGB(248, 176, 56)
@@ -199,6 +200,7 @@ local function event(widget, category, value, x, y)
         if value == KEY_ENTER_FIRST then
             if widget.display_mode == 0 and widget.folder_total > 0 then
                 widget.file_total = 0
+                widget.file_pointer = 0
                 log_files = system.listFiles(widget.model_file_path .. log_folders[widget.folder_pointer + 1])
                 if log_files ~= nil then
                     if #log_files > 1 then
@@ -319,8 +321,6 @@ local function wakeup(widget)
                 widget.cursor_x_max = 0
             end
             widget.read_data_flag = false
-            --Refresh the interface
-            lcd.invalidate()
         end
     elseif widget.display_mode == 2 then
         if widget.steps == 1 then
@@ -366,7 +366,7 @@ local function wakeup(widget)
                     maxmin_data[7] = value
                 end
             end
-            rpm_zoom      = (maxmin_data[6] + 100) / CURSOR_H_MAX
+            rpm_zoom      = (maxmin_data[6] + 200) / CURSOR_H_MAX
             maxmin_str[1] = tostring(maxmin_data[1]) .. 'V'
             maxmin_str[2] = tostring(maxmin_data[2]) .. 'V'
             maxmin_str[3] = tostring(maxmin_data[3]) .. '°C'
@@ -430,22 +430,26 @@ local function paint(widget)
     elseif widget.display_mode == 1 then --Log file
         list_control(5, 5, t_w, tile .. " / " .. log_folders[widget.folder_pointer + 1], BACK_COLOR, LEFT)
         list_control(5 + t_w + 5, 5, l_w, tostring(widget.file_pointer) .. '/' .. tostring(widget.file_total) .. " [" .. tostring(widget.file_page) .. ']', BACK_COLOR, CENTERED)
-        if widget.file_total > 0 then
-            st = (widget.file_page - 1) * 28 + 1
-            for s = st, widget.file_total, 1 do
-                color = BACK_COLOR
-                if s == widget.file_pointer then
-                    color = SELECT_COLOR
-                end
-                local file_str = log_files[s + 1]
-                list_control(sx, sy, l_w, file_str:sub(1, -5), color, CENTERED)
-                sx = sx + l_w + 5
-                if s % 4 == 0 then
-                    sy = sy + 38
-                    sx = 5
-                end
-                if s == st + 27 then
-                    break
+        if widget.read_data_flag then
+            list_control(w / 2 - 80, h / 2, 160, "Reading log file...", BACK_COLOR, CENTERED)
+        else
+            if widget.file_total > 0 then
+                st = (widget.file_page - 1) * 28 + 1
+                for s = st, widget.file_total, 1 do
+                    color = BACK_COLOR
+                    if s == widget.file_pointer then
+                        color = SELECT_COLOR
+                    end
+                    local file_str = log_files[s + 1]
+                    list_control(sx, sy, l_w, file_str:sub(1, -5), color, CENTERED)
+                    sx = sx + l_w + 5
+                    if s % 4 == 0 then
+                        sy = sy + 38
+                        sx = 5
+                    end
+                    if s == st + 27 then
+                        break
+                    end
                 end
             end
         end
